@@ -1,1 +1,229 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <base target="_top">
+  <title>Trình Ghi Âm → Drive</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+      padding: 20px;
+    }
+    .card {
+      background: white; border-radius: 20px; padding: 35px 40px;
+      max-width: 520px; width: 100%;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+      text-align: center;
+    }
+    h1 { color: #333; margin-bottom: 8px; font-size: 24px; }
+    .subtitle { color: #888; margin-bottom: 15px; font-size: 14px; }
+
+    /* Nút mở tab mới (tránh iframe chặn micro) */
+    .newtab-box {
+      background: #fff3e0; border: 1px solid #ffb74d; border-radius: 12px;
+      padding: 12px 15px; margin-bottom: 18px; font-size: 13px; color: #e65100;
+      line-height: 1.5;
+    }
+    .btn-newtab {
+      background: #ff9800; color: white; border: none; border-radius: 25px;
+      padding: 10px 22px; font-size: 13px; font-weight: 600; cursor: pointer;
+      margin-top: 8px; transition: all 0.3s;
+    }
+    .btn-newtab:hover { background: #f57c00; transform: translateY(-1px); }
+    .newtab-box.hidden { display: none; }
+
+    .timer {
+      font-size: 52px; font-weight: bold; color: #667eea;
+      margin: 10px 0; font-variant-numeric: tabular-nums; letter-spacing: 2px;
+    }
+    .rec-dot {
+      display: inline-block; width: 14px; height: 14px;
+      background: #ff4757; border-radius: 50%; margin-right: 8px;
+      animation: pulse 1s infinite; vertical-align: middle;
+    }
+    @keyframes pulse {
+      0%,100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(1.3); }
+    }
+    .status { min-height: 24px; margin: 12px 0; color: #666; font-size: 14px; }
+    .btn-group { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
+    button.main-btn {
+      padding: 14px 24px; font-size: 15px; border: none; border-radius: 50px;
+      cursor: pointer; font-weight: 600; transition: all 0.3s;
+      flex: 1; min-width: 130px;
+    }
+    .btn-rec { background: #ff4757; color: white; }
+    .btn-rec:hover:not(:disabled) { background: #e84111; transform: translateY(-2px); box-shadow: 0 6px 20px rgba(255,71,87,0.4); }
+    .btn-stop { background: #666; color: white; }
+    .btn-stop:hover:not(:disabled) { background: #444; transform: translateY(-2px); }
+    .btn-save { background: #2ed573; color: white; }
+    .btn-save:hover:not(:disabled) { background: #26b862; transform: translateY(-2px); box-shadow: 0 6px 20px rgba(46,213,115,0.4); }
+    button:disabled { opacity: 0.35; cursor: not-allowed; }
+    audio { width: 100%; margin-top: 20px; display: none; }
+    .result {
+      margin-top: 18px; padding: 15px; border-radius: 10px; display: none;
+      font-size: 13px; text-align: left; word-break: break-all; line-height: 1.6;
+    }
+    .result.ok { background: #d4edda; color: #155724; display: block; }
+    .result.err { background: #f8d7da; color: #721c24; display: block; }
+    .result a { color: #0066cc; font-weight: 600; }
+    .hint-green { color: #2e7d32; font-size: 12px; margin-top: 6px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>&#127908; Trình Ghi Âm</h1>
+    <p class="subtitle">Ghi âm và lưu vào Google Drive</p>
+
+    <!-- Hộp gợi ý mở tab mới (ẩn khi đã ở tab trực tiếp) -->
+    <div class="newtab-box" id="newtabBox">
+      &#9888;&#65039; <b>Apps Script có thể chặn micro</b> do chạy trong iframe.
+      <br>Nếu nhấn ghi âm bị lỗi "Permission denied", hãy mở tab mới:
+      <br>
+      <button class="btn-newtab" id="btnNewTab">&#128275; Mở tab mới (khắc phục chặn micro)</button>
+    </div>
+
+    <div class="timer" id="timer">00:00</div>
+    <div class="status" id="status">Sẵn sàng ghi âm</div>
+
+    <div class="btn-group">
+      <button class="main-btn btn-rec" id="btnRec">Bắt đầu ghi âm</button>
+      <button class="main-btn btn-stop" id="btnStop" disabled>Dừng</button>
+      <button class="main-btn btn-save" id="btnSave" disabled>Lưu vào Drive</button>
+    </div>
+
+    <audio id="player" controls></audio>
+    <div class="result" id="result"></div>
+  </div>
+
+  <script>
+    // URL Web App được tự động tiêm từ Apps Script
+    const WEB_APP_URL = "<?= webAppUrl ?>";
+
+    let mediaRecorder = null, audioChunks = [], audioBlob = null;
+    let stream = null, timerInt = null, seconds = 0;
+
+    const btnRec = document.getElementById('btnRec');
+    const btnStop = document.getElementById('btnStop');
+    const btnSave = document.getElementById('btnSave');
+    const timerEl = document.getElementById('timer');
+    const statusEl = document.getElementById('status');
+    const player = document.getElementById('player');
+    const resultEl = document.getElementById('result');
+    const newtabBox = document.getElementById('newtabBox');
+
+    // ===== KIỂM TRA: nếu đang chạy trực tiếp (không trong iframe) thì ẩn hộp gợi ý =====
+    try {
+      if (window.top === window.self) {
+        // Đang là tab trực tiếp (đã mở qua nút mới) → ẩn hộp cam
+        newtabBox.classList.add('hidden');
+        statusEl.textContent = '✅ Đang ở chế độ trực tiếp — có thể ghi âm bình thường';
+      }
+    } catch(e) {}
+
+    // ===== NÚT MỞ TAB MỚI (bỏ qua iframe chặn micro) =====
+    document.getElementById('btnNewTab').addEventListener('click', () => {
+      // Mở URL trực tiếp của trang hiện tại (googleusercontent) trong tab mới
+      // Tab mới sẽ chạy top-level, không bị iframe chặn quyền micro
+      window.open(window.location.href, '_blank');
+    });
+
+    // ===== Bắt đầu ghi âm =====
+    btnRec.addEventListener('click', async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaRecorder = new MediaRecorder(stream);
+        audioChunks = [];
+
+        mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
+        mediaRecorder.onstop = () => {
+          audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+          player.src = URL.createObjectURL(audioBlob);
+          player.style.display = 'block';
+          btnSave.disabled = false;
+          statusEl.textContent = '✅ Đã ghi xong — nghe lại hoặc lưu vào Drive';
+          stream.getTracks().forEach(t => t.stop());
+        };
+
+        mediaRecorder.start();
+        startTimer();
+        btnRec.disabled = true;
+        btnStop.disabled = false;
+        btnSave.disabled = true;
+        resultEl.style.display = 'none';
+        statusEl.innerHTML = '<span class="rec-dot"></span>Đang ghi âm...';
+      } catch (err) {
+        // Lỗi chặn micro → hiện rõ gợi ý mở tab mới
+        statusEl.innerHTML = '&#10060; Lỗi: <b>' + err.message + '</b><br>' +
+          '<span style="color:#e65100;font-size:13px;">&#8593; Nhấn nút CAM "Mở tab mới" ở trên rồi ghi âm lại trong tab mới.</span>';
+        newtabBox.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    });
+
+    // ===== Dừng ghi âm =====
+    btnStop.addEventListener('click', () => {
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+      stopTimer();
+      btnRec.disabled = false;
+      btnStop.disabled = true;
+    });
+
+    // ===== Lưu vào Drive =====
+    btnSave.addEventListener('click', async () => {
+      if (!audioBlob) return;
+      btnSave.disabled = true;
+      statusEl.textContent = '⏳ Đang tải lên Drive...';
+
+      try {
+        const reader = new FileReader();
+        reader.readAsDataURL(audioBlob);
+        reader.onloadend = async () => {
+          const base64 = reader.result.split(',')[1];
+          const fileName = 'ghi-am-' + new Date().toISOString().replace(/[:.]/g, '-') + '.webm';
+
+          const res = await fetch(WEB_APP_URL, {
+            method: 'POST',
+            body: JSON.stringify({ audio: base64, fileName: fileName }),
+            headers: { 'Content-Type': 'text/plain' }
+          });
+          const data = await res.json();
+
+          if (data.success) {
+            resultEl.className = 'result ok';
+            resultEl.innerHTML = '✅ Lưu thành công!<br><b>Tên file:</b> ' + data.fileName +
+              '<br><b>Link:</b> <a href="' + data.fileUrl + '" target="_blank">Mở trong Drive</a>' +
+              '<br><br>Nằm trong thư mục <b>"Ghi Am"</b>.';
+            statusEl.textContent = '🎉 Đã lưu vào Google Drive!';
+            audioBlob = null;
+            btnSave.disabled = true;
+          } else {
+            throw new Error(data.error || 'Lỗi server');
+          }
+        };
+      } catch (err) {
+        resultEl.className = 'result err';
+        resultEl.textContent = '❌ Lỗi: ' + err.message + ' — nhấn Lưu lại lần nữa (lần đầu Apps Script cần khởi động).';
+        statusEl.textContent = 'Thử lại';
+        btnSave.disabled = false;
+      }
+    });
+
+    function startTimer() {
+      seconds = 0; upd();
+      timerInt = setInterval(() => { seconds++; upd(); }, 1000);
+    }
+    function stopTimer() { clearInterval(timerInt); }
+    function upd() {
+      const m = String(Math.floor(seconds/60)).padStart(2,'0');
+      const s = String(seconds%60).padStart(2,'0');
+      timerEl.textContent = m + ':' + s;
+    }
+  </script>
+</body>
+</html>
 
